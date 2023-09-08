@@ -1,0 +1,155 @@
+---
+title: "Practical Machine Learning Course Project"
+author: "Dan Feldman"
+date: "2023-09-08"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(skimr)
+library(caret)
+library(MLmetrics)
+library(corrplot)
+library(ada)
+library(randomForest)
+```
+
+## 1. Project Description and Executive Summary
+
+This report displays the work process and results of applying a machine learning algorithm to predict the class of lifting error (A - E) resulting from six healthy young men repeating a Unilateral Dumbbell Biceps Curl.  
+
+After preparing the data, two machine learning algorithms were applied using classification trees within the $caret$ framework: a single decision tree using the CART methodology from the $rpart$ package and a random forest using the $randomForest$ package.
+
+The random forest model was substantially more effective at predicting the class of lift compared to the single classification tree model.  Using testing data, the random forest model predicted the class of lift with 99.5% accuracy, compared to 79.5% accuracy with the single tree model.  The following is a description of the work process with code for developing these models.
+
+## 2. Model Justification
+
+Classification trees were chosen because the data contains a large number of potential predictor variables and there was no subject matter expertise available that could inform the modeling process.  Classification trees are effective and efficient in this situation as they will effectively parse out non-useful or redundant predictors.  Regression models are less effective as subject matter expertise is typically important to have in order to avoid too many degrees of freedom given up for the inclusion of ineffective predictors.  A regularized regression such as Lasso can help mediate this issue with regression, but regression also has other limitations.  It is constrained by the assumption of a linear relationship between predictors and outcome.  Classification trees are not constrained in this manner.  
+
+
+## 3. Data Import and Cleaning 
+
+### Phase One
+
+*In phase one, the training data is imported, evaluated for missing data, and variable types are modified as needed.*
+
+After clearing out any data in memory, the training data is imported from the URL
+```{r}
+rm(list = ls())
+data <- read.csv(url("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"))
+```
+
+The first cleaning step involves looking for any missing data.  The $skimr$ package is an effective tool here.  There are quite a few predictors that are either completely missing data or are mostly empty.  Note the values in the "n_missing", "character.empty", and complete_rate columns.
+
+```{r}
+skim <- skim(data)
+skim %>%
+  filter(complete_rate < 1) %>%
+  select(skim_variable, complete_rate) %>%
+  arrange(desc(complete_rate))
+
+skim %>%
+  filter(character.empty > 1) %>%
+  select(skim_variable, character.empty) %>%
+  arrange(desc(character.empty))
+```
+
+The extent of missingness for the missing/incomplete predictor variables is too large to make data imputation effective, so these variables are dropped.  In addition, predictor variables that are unlikely to have anything to do with class of lift are also dropped so as to improve processing time in the model building process.  These variables include the time stamps and the row index variable, $X$. A new data object incorporating the remaining predictor variables is created named $data\_ working$.  These data are rechecked with $skim$ for any residual missingness (not shown).
+
+```{r}
+data_working <- data %>%
+  select(starts_with(c("user_", "classe", "roll","pitch", "yaw",
+                       "total", "gyros", "accel","magnet")))
+```
+```{r, eval=FALSE}
+skim(data_working)
+```
+
+Next, the outcome variable, $classe$ is converted to a factor and checked for distribution just to get a sense of whether the data is balanced.
+```{r}
+data_working$classe <- factor(data_working$classe)
+summary(factor(data_working$classe))
+```
+The data appear reasonably balanced with class "A" occurring most frequently.  This is the final step before partitioning the data into training and testing sets and pre-processing the training data.
+
+## Phase Two
+
+*In phase two, the data are partitioned into training and test sets.  The training data are further prepared by identifying and removing predictors that are highly correlated and then centering and scaling the numeric data.  Predictors that have no variation are also removed.*
+
+After setting a random seed, the data are partitioned into an 80% training and 20% testing set, based on the outcome variable $classe$.
+```{r}
+set.seed(2023)
+partition <- createDataPartition(data_working$classe, p=0.8, list = FALSE)
+test <- data_working[-partition,]
+train <- data_working[partition,]
+```
+
+Using R's built-in $stats$ package, correlation coefficients between the numeric data are calculated using the $cor$ function.  Based on this output, variables for removal are identified using the $findCorrelation$ function from the $caret$ package.  The cutoff for removal is set at a conservative 90% correlation, where only very highly correlated (almost co-linear) variables will be selected for removal.  
+```{r}
+train_cor <- cor(train[, 3:54])
+findcor <- findCorrelation(train_cor, cutoff = 0.9, names = TRUE)
+findcor
+train <- train %>%
+  select(-any_of(findcor))
+```
+
+From the earlier $skimr$ output, the numeric data appear to be on different scales.  For example:
+```{r}
+summary(train$gyros_belt_x)
+summary(train$magnet_dumbbell_x)
+```
+
+Numeric data within the training set will thus be mean-centered and scaled (divded by the SD).  Additionally, predictors with non-zero variance will be removed.  These adjustments will be executed with the $preProcess$ function from the $caret$ package and stored within an object named $transform\_object$.
+```{r}
+transform_object <- preProcess(train, c("center", "scale", "nzv"))
+```
+
+The training data is now ready for model development.
+
+## 4. Model Development
+
+### Classification Tree
+*The first model to be developed will be a single classification tree using $rpart$.  Cross-validation will be applied utilizing 10 folds and 3 repeats because the size of the training data, `r nrow(train)` rows, is large enough to support a cross validation procedure of this size.  In addition, the cost complexity parameter, which determines how much a node split improves model performance, is determined through cross-validation. Default values are used for the minimal number of splits and maximal tree depth.  Accuracy will be used at the performance metric*
+
+Set up the cross-validation and set the random seed.
+```{r }
+cvCrtl <- trainControl(method = "repeatedcv", number = 10, repeats = 3, classProbs = TRUE, summaryFunction = multiClassSummary)
+set.seed(2023)
+```
+
+Estimate the classification tree model, using the $tuneLength$ option to tell R to determine the best value for the cost complexity parameter by trying 30 different values. The pre-processed training data are used.
+```{r, warning = FALSE}
+tree_model <- train(classe ~ ., data = predict(transform_object, train), method = "rpart", tuneLength = 30, 
+                    trControl = cvCrtl, metric = "Accuracy")
+```
+
+The out-of-sample error estimate is obtained by developing a confusion matrix with the test data, then obtaining the overall accuracy value from this matrix and subtracting it from 1.  The pre-processing object, $transform\_object$, that was developed from the training data is applied to the test data.
+```{r}
+tree_confmat <- confusionMatrix(test$classe, predict(tree_model, predict(transform_object, test)))
+```
+The out-of-sample model error estimate for the tree model is `r sprintf("%1.1f%%", 100*(1-tree_confmat$overall[1]))`, indicating that `r sprintf("%1.1f%%", 100*(1-tree_confmat$overall[1]))` of predictions in the test data were missclassified.  We can do better!
+
+### Random Forest
+
+*The next model to be developed will be a random forest using the $randomForest$ package.  Cross-validation will be identical to the cross-validation used for the tree model for the same reasons given.  Ideally, the tuning parameters of ntree (number of trees in forest) and mtry (number of predictors sampled for splitting at each node) would be determined through cross-validation.  However, given the very long processing time for this method, these values will be set at the default for mtry and ntree = 500.*
+
+Set the random seed and estimate the model.  Cross-validation object $cvCrtl$ is the same as previous.
+```{r}
+set.seed(2023)
+forest_model <- train(classe ~ ., data = predict(transform_object, train), method = "rf",
+                    trControl = cvCrtl, metric = "Accuracy", ntree = 500)
+```
+
+As before, a confusion matrix is developed and used to determine the out-of-sample error estimate
+```{r}
+forest_confmat <- confusionMatrix(test$classe, predict(forest_model, predict(transform_object, test)))
+```
+
+The out-of-sample estimate for the random forest model is `r sprintf("%1.1f%%", 100*(1-forest_confmat$overall[1]))`, a high level of accuracy and a major improvement over the single tree model.  Using this model, predictions can be made for the test data supplied by the assignment:
+
+```{r, echo = FALSE}
+predict_data <- read.csv(url("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"))
+predict(forest_model, predict(transform_object, predict_data))
+```
