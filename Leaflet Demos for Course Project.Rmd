@@ -1,0 +1,26 @@
+---
+title: "Sagadahoc County, Maine Full Value Tax Rates by Town (2021)"
+output: html_document
+author: Dan Feldman
+date: "2023-09-17"
+---
+
+```{r setup, include=FALSE}
+library(leaflet)
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+### Click for info
+
+``` {r, message = FALSE}
+sagadahoc_county <- data.frame(names = c("Topsham", "Bowdoin", "Bowdoinham", "Richmond", "Bath", "Phippsburg", "West Bath", "Arrowsic", "Woolwich", "Georgetown"),
+                              rate = c(14.89, 12.15, 13.42, 13.96, 17.93, 7.2, 8.61, 8.99, 11.5, 6.16),
+                              lat =  c(43.9248035,44.0364973,44.0088293,44.0872965,43.9134656,43.820638,43.9094542,43.8498038,43.9169747,43.8042433),
+                              lng =  c(-69.9635662,	-69.9720794,-69.899489,	-69.7989349,-69.8141706,-69.8147684,-69.8654937,-69.7781013,-69.8015014,-69.7555079)
+)
+
+sagadahoc_county %>%
+  leaflet() %>%
+  addTiles() %>%
+  addCircles(weight = 1, radius = sagadahoc_county$rate * 100, popup = paste0(sagadahoc_county$names, ", $",sagadahoc_county$rate," per $1,000"))
+```
